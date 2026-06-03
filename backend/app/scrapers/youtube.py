@@ -13,31 +13,26 @@ def get_youtube_data(url: str) -> dict:
     if not video_id:
         raise ValueError("Invalid YouTube URL")
 
-    # 1. Fetch Transcript
-    # try:
-    # # Get the list of available transcripts for the video ID
-    #     transcript_list = YouTubeTranscriptApi().list(video_id)
-    
-    # # Find the best transcript available (automatically chooses English or fallback)
-    #     best_transcript = transcript_list.find_transcript(['en'])
-    
-    # # Fetch the actual data chunks
-    #     data_chunks = best_transcript.fetch()
-    
-    # # Combine chunks into a clean text string
-    #     full_transcript = " ".join([t['text'] for t in data_chunks])
-    # except Exception as e:
-    #     full_transcript =(f"Transcript not available programmatically: {str(e)}"
-    #     f"Reason: Subtitles might be disabled, or the scraper was throttled. Error: {str(e)}")
+    # 1. Fetch Transcript (using youtube-transcript-api v1.x API)
     try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        full_transcript = " ".join([t['text'] for t in transcript_list])
-    except Exception as e:
-        # Captures missing CC, private videos, or rate limits cleanly without crashing the app!
-        full_transcript = (
-            f"Transcript data could not be retrieved programmatically for this video. "
-            f"Reason: Subtitles might be disabled, or the scraper was throttled. Error: {str(e)}"
-        )
+        api = YouTubeTranscriptApi()
+        # Try English first, then fall back to any available language
+        transcript_list = api.list(video_id)
+        best_transcript = transcript_list.find_transcript(['en'])
+        fetched = best_transcript.fetch()
+        full_transcript = " ".join([snippet.text for snippet in fetched])
+    except Exception:
+        try:
+            # Fallback: grab whatever language is available and auto-translate if possible
+            api = YouTubeTranscriptApi()
+            fetched = api.fetch(video_id)
+            full_transcript = " ".join([snippet.text for snippet in fetched])
+        except Exception as e:
+            # Captures missing CC, private videos, or rate limits cleanly without crashing the app!
+            full_transcript = (
+                f"Transcript data could not be retrieved programmatically for this video. "
+                f"Reason: Subtitles might be disabled, or the scraper was throttled. Error: {str(e)}"
+            )
     # 2. Fetch Metadata via yt-dlp
     ydl_opts = {'skip_download': True, 'quiet': True,
     # adding this 'extractor_args' forces yt-dlp to bypass rigid runtime checks

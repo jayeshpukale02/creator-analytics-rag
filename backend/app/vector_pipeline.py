@@ -52,14 +52,14 @@ def get_embedding(text: str, model="gemini-embedding-2"):
 
 
 def initialize_qdrant_collection():
-    """Creates the Qdrant collection configured for the newest Gemini dimensions."""
+    """Creates the Qdrant collection"""
     # Force-delete the old layout if it exists to reset the size boundaries
     if qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
-        qdrant_client.delete_collection(collection_name=COLLECTION_NAME)
+        qdrant_client.delete_collection(collection_name=COLLECTION_NAME) #if old collection exists deletes it
         print(f"Cleared old conflicting schemas from collection '{COLLECTION_NAME}'...")
         
     if not qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
-        # UPGRADE: Configured for gemini-embedding-2's default 3072 dimensions
+        # (resloves gemini model version conflict) Configured for gemini-embedding-2's default 3072 dimensions
         qdrant_client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=3072, distance=Distance.COSINE),

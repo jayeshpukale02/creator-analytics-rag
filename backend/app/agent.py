@@ -27,14 +27,14 @@ def retrieve_semantic_context(state: AgentState):
     query_vector = get_embedding(user_query)
     
     # Query our local Docker container for the top 3 matches
-    search_results = qdrant_client.search(
+    search_results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
         query_vector=query_vector,
         limit=3
     )
     
     # Concatenate the matching payload hits into a single context paragraph
-    retrieved_text = "\n".join([hit.payload["page_content"] for hit in search_results])
+    retrieved_text = "\n".join([hit.payload["page_content"] for hit in search_results.points])
     
     # Pass the context string directly forward through the graph state
     return {"video_context": retrieved_text}

@@ -47,7 +47,7 @@ def generate_response(state: AgentState):
     context = state.get("video_context", "No direct vector text matches found.")
     
     system_instruction = (
-        f"You are an expert DevOps and Social Media analytics engine. "
+        f"You are an expert Social Media analytics engine. "
         f"Answer the user's inquiry accurately using only the extracted video context below.\n\n"
         f"--- VIDEO TEXT DATA CONTEXT ---\n{context}\n--------------------------------\n"
         f"Be direct, structured, and prioritize analytical clarity."
@@ -84,3 +84,27 @@ workflow.add_edge("generator", END)
 
 # Compile graph into a standard executable agent instance
 graph_agent = workflow.compile()
+
+# 5. Node: The Custom Analytics Engine
+def fetch_video_analytics(state: AgentState):
+    """Processes analytical math queries by accessing our key metric tables."""
+    # Mock database record representing a creator profile metrics map
+    mock_metrics_db = {
+        "total_views": 1420500,
+        "average_watch_time_mins": 8.4,
+        "subscriber_conversion_rate": "2.3%",
+        "top_performing_video_id": "dQw4w9WgXcQ"
+    }
+    
+    # Format the data cleanly for our LLM synthesizer layer
+    formatted_metrics = (
+        f"--- INTERNAL SQL METRIC TABLES ---\n"
+        f"Total Profile Views: {mock_metrics_db['total_views']}\n"
+        f"Average Watch Duration: {mock_metrics_db['average_watch_time_mins']} minutes\n"
+        f"Sub Conversion Rate: {mock_metrics_db['subscriber_conversion_rate']}\n"
+        f"Top Video Asset Identifier: {mock_metrics_db['top_performing_video_id']}\n"
+        f"--------------------------------------"
+    )
+    
+    # Pass the data string forward through the state dictionary context channel
+    return {"video_context": formatted_metrics}

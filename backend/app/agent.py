@@ -29,7 +29,7 @@ def retrieve_semantic_context(state: AgentState):
     # Query our local Docker container for the top 3 matches
     search_results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
-        query_vector=query_vector,
+        query=query_vector,
         limit=3
     )
     

@@ -2,7 +2,7 @@ from app.scrapers.youtube import get_youtube_data
 from app.vector_pipeline import chunk_transcript, store_video_chunks_in_db
 
 if __name__ == "__main__":
-    print("--- 🎬 STARTING FULL INGESTION PIPELINE 🎬 ---")
+    print("---  STARTING FULL INGESTION PIPELINE  ---")
     
     # 1. Fetch data using Day 1 logic
     yt_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ" # Use any valid video with captions
@@ -24,4 +24,4 @@ if __name__ == "__main__":
     print("Uploading vectorized tokens to local Qdrant container...")
     db_status = store_video_chunks_in_db(chunks)
     
-    print("\n✅ PIPELINE SUCCESSFUL! Verification status:", db_status.status)
+    print("\n PIPELINE SUCCESSFUL! Verification status:", db_status.status)

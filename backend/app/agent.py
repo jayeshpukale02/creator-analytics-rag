@@ -69,3 +69,18 @@ def generate_response(state: AgentState):
     
     # Return the text as a clean assistant reply message node string
     return {"messages": [{"role": "assistant", "content": response.text}]}
+
+    # 4. Construct and compile the network layout graph
+workflow = StateGraph(AgentState)
+
+# Add our custom processing steps
+workflow.add_node("retriever", retrieve_semantic_context)
+workflow.add_node("generator", generate_response)
+
+# Connect the paths
+workflow.add_edge(START, "retriever")
+workflow.add_edge("retriever", "generator")
+workflow.add_edge("generator", END)
+
+# Compile graph into a standard executable agent instance
+graph_agent = workflow.compile()

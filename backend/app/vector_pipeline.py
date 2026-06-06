@@ -51,47 +51,60 @@ def get_embedding(text: str, model="gemini-embedding-2"):
     return response.embeddings[0].values
 
 
-def initialize_qdrant_collection():
-    """Creates the Qdrant collection"""
-    # Force-delete the old layout if it exists to reset the size boundaries
-    if qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
-        qdrant_client.delete_collection(collection_name=COLLECTION_NAME) #if old collection exists deletes it
-        print(f"Cleared old conflicting schemas from collection '{COLLECTION_NAME}'...")
-        
+def initialize_qdrant_collection(force_reset: bool = False):
+    """
+    Creates the Qdrant collection.
+    force_reset=True: wipes and recreates (used by /api/ingest for a clean slate).
+    force_reset=False: creates only if it doesn't already exist (safe default).
+    """
+    if force_reset and qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
+        qdrant_client.delete_collection(collection_name=COLLECTION_NAME)
+        print(f"[Qdrant] Wiped old collection '{COLLECTION_NAME}' for fresh ingest.")
+
     if not qdrant_client.collection_exists(collection_name=COLLECTION_NAME):
         # (resloves gemini model version conflict) Configured for gemini-embedding-2's default 3072 dimensions
         qdrant_client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=3072, distance=Distance.COSINE),
         )
-        print(f"Collection '{COLLECTION_NAME}' successfully created in Qdrant for Gemini Embedding 2!")
+        print(f"[Qdrant] Collection '{COLLECTION_NAME}' created (3072-dim, Cosine).")
 
 
-def store_video_chunks_in_db(processed_chunks: list[dict]):
-    """Embeds chunks via Gemini and writes them directly into the local Qdrant container."""
-    initialize_qdrant_collection()
-    
+def store_video_chunks_in_db(processed_chunks: list[dict], video_metadata: dict = None):
+    """
+    Embeds chunks via Gemini and upserts them into Qdrant.
+    video_metadata: optional dict of video-level fields (views, likes, creator, etc.)
+                    merged into every chunk's payload so the analytics node can read
+                    real metrics directly from Qdrant without a separate store.
+    """
     points = []
     for i, chunk in enumerate(processed_chunks):
-        print(f"Generating Gemini vector embedding for chunk {i+1}/{len(processed_chunks)}...")
-        
-        # Call the new free Gemini embedding engine
+        print(f"[Embed] Chunk {i+1}/{len(processed_chunks)} — video_id: {chunk['metadata']['video_id']}")
+
         vector = get_embedding(chunk["text"])
-        
+
+        # Base payload: the chunk text + its own metadata
+        payload = {
+            "page_content": chunk["text"],
+            **chunk["metadata"]
+        }
+
+        # Merge in video-level metadata so analytics queries work from chunk payloads
+        if video_metadata:
+            payload.update(video_metadata)
+
         points.append(
             PointStruct(
                 id=hash(chunk["metadata"]["chunk_id"]) % (10**10),
                 vector=vector,
-                payload={
-                    "page_content": chunk["text"],
-                    **chunk["metadata"]
-                }
+                payload=payload
             )
         )
-        
+
     operation_info = qdrant_client.upsert(
         collection_name=COLLECTION_NAME,
         wait=True,
         points=points
     )
+    print(f"[Qdrant] Upserted {len(points)} chunks — status: {operation_info.status}")
     return operation_info

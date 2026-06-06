@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from app.agent import graph_agent
+from app.api.ingest import router as ingest_router
 from langchain_core.messages import HumanMessage
 import asyncio
 
@@ -21,6 +22,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount routers
+app.include_router(ingest_router)
 
 class ChatRequest(BaseModel):
     message: str

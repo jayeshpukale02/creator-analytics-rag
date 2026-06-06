@@ -108,3 +108,44 @@ def fetch_video_analytics(state: AgentState):
     
     # Pass the data string forward through the state dictionary context channel
     return {"video_context": formatted_metrics}
+
+    # 6. The Conditional Routing Edge Function
+def route_user_intent(state: AgentState) -> str:
+    """Inspects the user's prompt text to decide the optimal execution node path."""
+    user_query = state["messages"][-1].content.lower()
+    
+    # Catch keyword tags that indicate a calculation requirement
+    analytics_keywords = ["views", "stats", "metrics", "analytics", "subscriber", "average"]
+    
+    if any(keyword in user_query for keyword in analytics_keywords):
+        print(" ROUTER LOGIC: Routing to [Analytics Engine]...")
+        return "analytics"
+        
+    print(" ROUTER LOGIC: Routing to [RAG Vector Retriever]...")
+    return "retriever"
+
+    #(6) Reconstruct the execution architecture map
+workflow = StateGraph(AgentState)
+
+# 1. Register all three functional work nodes
+workflow.add_node("retriever", retrieve_semantic_context)
+workflow.add_node("analytics", fetch_video_analytics)
+workflow.add_node("generator", generate_response)
+
+# 2. Configure the entry point to run our routing function on START
+workflow.add_conditional_edges(
+    START,
+    route_user_intent,
+    {
+        "analytics": "analytics",   # If router returns "analytics", branch up!
+        "retriever": "retriever"    # If router returns "retriever", branch down!
+    }
+)
+
+# 3. Connect both processing nodes straight into the LLM synthesis layer
+workflow.add_edge("analytics", "generator")
+workflow.add_edge("retriever", "generator")
+workflow.add_edge("generator", END)
+
+# Compile into our new operational agent instance
+graph_agent = workflow.compile()

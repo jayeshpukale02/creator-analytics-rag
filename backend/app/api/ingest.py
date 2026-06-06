@@ -26,7 +26,7 @@ async def ingest_videos(payload: IngestRequest):
 
     results = {}
 
-    # ── Video A: YouTube ────────────────────────────────────────────────────────
+    # ── Video A: YouTube ─
     try:
         yt_data = get_youtube_data(payload.youtube_url)
 

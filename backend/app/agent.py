@@ -1,180 +1,173 @@
 import os
+import uuid
 from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
 from google import genai
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from app.vector_pipeline import get_embedding, COLLECTION_NAME
 
-# Initialize connection clients
+# Initialize clients
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 qdrant_client = QdrantClient(url="http://localhost:6333")
 
 
+# ─── 1. State ──────────────────────────────────────────────────────────────────
 class AgentState(TypedDict):
-    # add_messages tells LangGraph to append new chat entries to history automatically
     messages: Annotated[list, add_messages]
     video_context: str
-    target_video_id: str   # FIX: was erroneously set to `SyntaxError` (a Python exception class)
+    target_video_id: str
 
 
+# ─── 2. RAG Retriever Node ─────────────────────────────────────────────────────
 def retrieve_semantic_context(state: AgentState):
-    """Queries Qdrant to find relevant transcript chunks using Gemini embeddings."""
+    """Queries Qdrant for the top-5 semantically closest transcript chunks."""
     user_query = state["messages"][-1].content
-
-    # Vectorize the user prompt
     query_vector = get_embedding(user_query)
 
-    # Query local Qdrant container for top 5 semantic matches
-    search_results = qdrant_client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        limit=5
-    )
-
-    # Build context string with source citations (video_id + chunk_id) per chunk
-    context_parts = []
-    for hit in search_results.points:
-        payload = hit.payload
-        source_tag = f"[Source: Video {payload.get('video_id', '?')} | Chunk {payload.get('chunk_id', '?')}]"
-        context_parts.append(f"{source_tag}\n{payload['page_content']}")
-
-    retrieved_text = "\n\n".join(context_parts) if context_parts else "No relevant chunks found in the vector store."
+    try:
+        search_results = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=5
+        )
+        context_parts = []
+        for hit in search_results.points:
+            p = hit.payload
+            tag = f"[Source: Video {p.get('video_id', '?')} | Chunk {p.get('chunk_id', '?')}]"
+            context_parts.append(f"{tag}\n{p.get('page_content', '')}")
+        retrieved_text = "\n\n".join(context_parts) if context_parts else "No relevant chunks found."
+    except Exception as e:
+        retrieved_text = f"Vector search failed: {e}"
 
     return {"video_context": retrieved_text}
 
 
-# ─── 3. Node: Analytics Engine ─────────────────────────────────────────────────
+# ─── 3. Analytics Node ─────────────────────────────────────────────────────────
 def fetch_video_analytics(state: AgentState):
     """
-    Pulls real engagement metrics for both videos directly from Qdrant payload metadata.
-    Searches for chunks tagged with video_id 'A' and 'B' and reads their stored metadata.
+    Pulls live engagement metrics for Video A and B directly from Qdrant payloads.
+    Uses the typed Filter / FieldCondition API — NOT raw dicts (those crash).
     """
-    results = {}
+    lines = ["--- REAL VIDEO ANALYTICS (from Qdrant) ---"]
 
     for label in ["A", "B"]:
-        # Scroll through Qdrant to find metadata payloads tagged with this video_id label
-        scroll_results, _ = qdrant_client.scroll(
-            collection_name=COLLECTION_NAME,
-            scroll_filter={
-                "must": [{"key": "video_id", "match": {"value": label}}]
-            },
-            limit=1,
-            with_payload=True,
-            with_vectors=False
-        )
+        try:
+            # Correct Qdrant Python client filter syntax
+            scroll_results, _ = qdrant_client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=Filter(
+                    must=[FieldCondition(key="video_id", match=MatchValue(value=label))]
+                ),
+                limit=1,
+                with_payload=True,
+                with_vectors=False
+            )
+        except Exception as e:
+            lines.append(f"\nVideo {label}: Qdrant scroll error — {e}")
+            continue
 
         if scroll_results:
-            payload = scroll_results[0].payload
-            results[label] = {
-                "creator":         payload.get("creator", "Unknown"),
-                "platform":        payload.get("platform", "Unknown"),
-                "views":           payload.get("views", 0),
-                "likes":           payload.get("likes", 0),
-                "comments":        payload.get("comments", 0),
-                "engagement_rate": payload.get("engagement_rate", 0.0),
-                "follower_count":  payload.get("follower_count", 0),
-                "duration":        payload.get("duration", 0),
-                "upload_date":     payload.get("upload_date", "N/A"),
-                "hashtags":        payload.get("hashtags", []),
-            }
-        else:
-            results[label] = None
+            p = scroll_results[0].payload
+            views    = p.get("views", 0)
+            likes    = p.get("likes", 0)
+            comments = p.get("comments", 0)
+            eng      = p.get("engagement_rate", 0.0)
+            followers = p.get("follower_count", 0)
+            hashtags  = p.get("hashtags", [])
 
-    lines = ["--- REAL VIDEO ANALYTICS (from Qdrant) ---"]
-    for label, data in results.items():
-        if data:
             lines.append(
-                f"\nVideo {label} ({data['platform'].upper()} | @{data['creator']}):\n"
-                f"  Views: {data['views']:,} | Likes: {data['likes']:,} | Comments: {data['comments']:,}\n"
-                f"  Engagement Rate: {data['engagement_rate']}%\n"
-                f"  Followers: {data['follower_count']:,} | Duration: {data['duration']}s\n"
-                f"  Upload Date: {data['upload_date']}\n"
-                f"  Hashtags: {', '.join(data['hashtags'][:5]) if data['hashtags'] else 'None'}"
+                f"\nVideo {label} ({p.get('platform','?').upper()} | @{p.get('creator','?')}):\n"
+                f"  Views: {views:,} | Likes: {likes:,} | Comments: {comments:,}\n"
+                f"  Engagement Rate: {eng}%\n"
+                f"  Followers: {followers:,} | Duration: {p.get('duration',0)}s\n"
+                f"  Upload Date: {p.get('upload_date','N/A')}\n"
+                f"  Hashtags: {', '.join(hashtags[:5]) if hashtags else 'None'}"
             )
         else:
-            lines.append(f"\nVideo {label}: No metadata found — video may not have been ingested yet.")
+            lines.append(f"\nVideo {label}: No data found — ingest videos first.")
 
-    formatted_metrics = "\n".join(lines)
-    return {"video_context": formatted_metrics}
+    return {"video_context": "\n".join(lines)}
 
 
-# ─── 4. Node: LLM Response Generator ──────────────────────────────────────────
+# ─── 4. LLM Generator Node ─────────────────────────────────────────────────────
 async def generate_response(state: AgentState):
-    """Synthesizes the final answer using retrieved context and conversation history."""
-    conversation_history = state["messages"]
+    """Synthesizes the final answer from retrieved context + conversation history."""
     context = state.get("video_context", "No context retrieved.")
 
     system_instruction = (
         "You are an expert Social Media Analytics AI. "
-        "Answer the user's question using ONLY the video data context provided below. "
-        "Always cite your sources using the [Source: Video X | Chunk Y] tags present in the context.\n\n"
+        "Answer ONLY using the video data context below. "
+        "Cite sources using the [Source: Video X | Chunk Y] tags in the context.\n\n"
         f"--- VIDEO DATA CONTEXT ---\n{context}\n--------------------------\n"
-        "Be concise, structured, and analytically clear."
+        "Be concise, structured, and analytically sharp."
     )
 
-    # Package conversation history for Gemini SDK format
+    # Build content list — only include user messages and prior assistant replies.
+    # The last message must be role='user' for Gemini; the system prompt carries context.
     formatted_contents = []
-    for msg in conversation_history:
+    for msg in state["messages"]:
         role = "user" if msg.type == "human" else "model"
-        formatted_contents.append({"role": role, "parts": [{"text": msg.content}]})
+        text = msg.content.strip()
+        if not text:
+            continue
+        formatted_contents.append({"role": role, "parts": [{"text": text}]})
 
-    # Call Gemini async streaming
-    response_stream = await gemini_client.aio.models.generate_content_stream(
-        model="gemini-2.5-flash",
-        contents=formatted_contents,
-        config={"system_instruction": system_instruction}
-    )
+    # Gemini requires the conversation to end with a user turn
+    if not formatted_contents or formatted_contents[-1]["role"] != "user":
+        formatted_contents.append({
+            "role": "user",
+            "parts": [{"text": "Please answer based on the context above."}]
+        })
 
-    full_text = ""
-    async for chunk in response_stream:
-        if chunk.text:
-            full_text += chunk.text
+    try:
+        response_stream = await gemini_client.aio.models.generate_content_stream(
+            model="gemini-2.5-flash",
+            contents=formatted_contents,
+            config={"system_instruction": system_instruction}
+        )
+        full_text = ""
+        async for chunk in response_stream:
+            if chunk.text:
+                full_text += chunk.text
+    except Exception as e:
+        full_text = f"LLM error: {e}"
 
     return {"messages": [{"role": "assistant", "content": full_text}]}
 
 
-# ─── 5. Conditional Router ─────────────────────────────────────────────────────
+# ─── 5. Router ─────────────────────────────────────────────────────────────────
 def route_user_intent(state: AgentState) -> str:
-    """Routes the query to the analytics node or RAG retriever based on intent keywords."""
-    user_query = state["messages"][-1].content.lower()
-
+    """Routes to analytics node or RAG retriever based on query keywords."""
+    query = state["messages"][-1].content.lower()
     analytics_keywords = [
         "views", "likes", "comments", "engagement", "rate", "stats",
         "metrics", "analytics", "follower", "subscribers", "average",
         "performance", "who is", "creator", "upload date", "duration"
     ]
-
-    if any(keyword in user_query for keyword in analytics_keywords):
+    if any(kw in query for kw in analytics_keywords):
         print("ROUTER: → [Analytics Engine]")
         return "analytics"
-
-    print("ROUTER: → [RAG Vector Retriever]")
+    print("ROUTER: → [RAG Retriever]")
     return "retriever"
 
 
-# ─── 6. Build & Compile the LangGraph ─────────────────────────────────────────
+# ─── 6. Build Graph ────────────────────────────────────────────────────────────
 workflow = StateGraph(AgentState)
-
-# Register all functional nodes
 workflow.add_node("retriever", retrieve_semantic_context)
 workflow.add_node("analytics", fetch_video_analytics)
 workflow.add_node("generator", generate_response)
 
-# Entry point: route based on user intent
-workflow.add_conditional_edges(
-    START,
-    route_user_intent,
-    {
-        "analytics": "analytics",
-        "retriever": "retriever",
-    }
-)
-
-# Both branches feed into the LLM generator
+workflow.add_conditional_edges(START, route_user_intent, {
+    "analytics": "analytics",
+    "retriever": "retriever",
+})
 workflow.add_edge("analytics", "generator")
 workflow.add_edge("retriever", "generator")
 workflow.add_edge("generator", END)
 
-# Single compiled agent instance used by the FastAPI server
-graph_agent = workflow.compile()
+# MemorySaver enables cross-turn conversation memory via thread_id
+memory = MemorySaver()
+graph_agent = workflow.compile(checkpointer=memory)

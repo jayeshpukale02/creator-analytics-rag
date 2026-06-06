@@ -16,8 +16,14 @@ def get_instagram_data(url: str) -> dict:
 
     # Target an easy-to-use public Instagram scraping endpoint on RapidAPI
     api_url = "https://instagram-scraper-api2.p.rapidapi.com/v1/post_info"
-    # Extract shortcode from url like instagram.com/reel/C8XyZzIpxyz/ -> C8XyZzIpxyz
-    shortcode = url.split("/reel/")[1].split("/")[0]
+    # Extract shortcode from URLs like instagram.com/reel/C8XyZzIpxyz/
+    try:
+        shortcode = url.split("/reel/")[1].split("/")[0].strip()
+        if not shortcode:
+            raise ValueError("Empty shortcode")
+    except (IndexError, ValueError):
+        raise ValueError(f"Could not extract Instagram shortcode from URL: {url!r}. "
+                         "Expected format: https://instagram.com/reel/SHORTCODE/")
 
     querystring = {"code_or_id": shortcode}
     headers = {

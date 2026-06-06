@@ -10,7 +10,7 @@ def test_agent_query(query_text: str):
     print("="*50)
 
 if __name__ == "__main__":
-    print("--- 🧠 DAY 4 DYNAMIC AGENT APP ONLINE 🧠 ---")
+    print("--- DYNAMIC AGENT APP ONLINE  ---")
     
     # Test Run Path A: Should trigger the RAG Vector Retrieval Node
     test_agent_query("What focus or main message does Rick Astley convey in the video transcript?")

@@ -1,6 +1,5 @@
 import sys
 import os
-# Ensure app modules are discoverable on the system path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
@@ -14,40 +13,56 @@ import asyncio
 
 app = FastAPI(title="Creator Analytics Chatbot Engine", version="1.0.0")
 
-# Enable CORS boundaries so local frontend UIs can connect cleanly
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Open for local dev loop testing
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount routers
 app.include_router(ingest_router)
+
 
 class ChatRequest(BaseModel):
     message: str
+    thread_id: str = "default"   # frontend passes a session ID for per-user memory
 
-# 📡 THE STREAMING CONTROLLER
+
 @app.post("/api/chat/stream")
 async def stream_chat_response(payload: ChatRequest):
-    """Executes the state graph and streams back text chunks over HTTP instantly."""
-    
+    """
+    Streams the LangGraph agent response token-by-token.
+    Uses thread_id to maintain conversation memory across turns via MemorySaver.
+    """
     async def response_generator():
-        initial_inputs = {"messages": [HumanMessage(content=payload.message)]}
-        
-        # Invoke graph asynchronously
-        output_state = await graph_agent.ainvoke(initial_inputs)
-        final_text = output_state["messages"][-1].content
-        
-        # Simulate an instantaneous character network token stream delivery chunk loop
-        # (In production, you can stream chunk.text directly out of your custom node callbacks)
-        for token in final_text.split(" "):
-            yield f"{token} "
-            await asyncio.sleep(0.04) # 40ms smooth cadence spacing
-            
-    return StreamingResponse(response_generator(), media_type="text/event-stream")
+        config = {"configurable": {"thread_id": payload.thread_id}}
+        inputs = {"messages": [HumanMessage(content=payload.message)]}
+
+        # astream_events gives us real token-level streaming from the LLM node
+        async for event in graph_agent.astream_events(inputs, config=config, version="v2"):
+            kind = event.get("event")
+            # Stream tokens from the generator node only
+            if kind == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk and hasattr(chunk, "content") and chunk.content:
+                    yield chunk.content
+            # Fallback: also capture any plain text output chunks
+            elif kind == "on_chain_stream":
+                data = event.get("data", {})
+                output = data.get("output", {})
+                if isinstance(output, dict):
+                    msgs = output.get("messages", [])
+                    if msgs:
+                        last = msgs[-1]
+                        content = getattr(last, "content", None) or (
+                            last.get("content") if isinstance(last, dict) else None
+                        )
+                        if content:
+                            yield content
+
+    return StreamingResponse(response_generator(), media_type="text/plain; charset=utf-8")
+
 
 @app.get("/api/health")
 async def health_check():

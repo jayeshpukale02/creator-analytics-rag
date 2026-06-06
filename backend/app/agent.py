@@ -1,5 +1,5 @@
 import os
-from typing import Annotated, TypedDict, List
+from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from google import genai
@@ -10,148 +10,171 @@ from app.vector_pipeline import get_embedding, COLLECTION_NAME
 gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 qdrant_client = QdrantClient(url="http://localhost:6333")
 
-# 1. Define the unified state memory layout
+
 class AgentState(TypedDict):
     # add_messages tells LangGraph to append new chat entries to history automatically
     messages: Annotated[list, add_messages]
     video_context: str
-    target_video_id: SyntaxError
+    target_video_id: str   # FIX: was erroneously set to `SyntaxError` (a Python exception class)
 
-    # 2. Node: The Vector Search Context Retriever
+
 def retrieve_semantic_context(state: AgentState):
-    """Queries Qdrant to find relevant text transcript frames using Gemini vectors."""
-    # Grab the last message the user sent
+    """Queries Qdrant to find relevant transcript chunks using Gemini embeddings."""
     user_query = state["messages"][-1].content
-    
-    # Vectorize the user prompt using our Day 2 engine layout
+
+    # Vectorize the user prompt
     query_vector = get_embedding(user_query)
-    
-    # Query our local Docker container for the top 3 matches
+
+    # Query local Qdrant container for top 5 semantic matches
     search_results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
-        limit=3
+        limit=5
     )
-    
-    # Concatenate the matching payload hits into a single context paragraph
-    retrieved_text = "\n".join([hit.payload["page_content"] for hit in search_results.points])
-    
-    # Pass the context string directly forward through the graph state
+
+    # Build context string with source citations (video_id + chunk_id) per chunk
+    context_parts = []
+    for hit in search_results.points:
+        payload = hit.payload
+        source_tag = f"[Source: Video {payload.get('video_id', '?')} | Chunk {payload.get('chunk_id', '?')}]"
+        context_parts.append(f"{source_tag}\n{payload['page_content']}")
+
+    retrieved_text = "\n\n".join(context_parts) if context_parts else "No relevant chunks found in the vector store."
+
     return {"video_context": retrieved_text}
 
 
-# 3. Node: The LLM Responder Engine
+# ─── 3. Node: Analytics Engine ─────────────────────────────────────────────────
+def fetch_video_analytics(state: AgentState):
+    """
+    Pulls real engagement metrics for both videos directly from Qdrant payload metadata.
+    Searches for chunks tagged with video_id 'A' and 'B' and reads their stored metadata.
+    """
+    results = {}
+
+    for label in ["A", "B"]:
+        # Scroll through Qdrant to find metadata payloads tagged with this video_id label
+        scroll_results, _ = qdrant_client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter={
+                "must": [{"key": "video_id", "match": {"value": label}}]
+            },
+            limit=1,
+            with_payload=True,
+            with_vectors=False
+        )
+
+        if scroll_results:
+            payload = scroll_results[0].payload
+            results[label] = {
+                "creator":         payload.get("creator", "Unknown"),
+                "platform":        payload.get("platform", "Unknown"),
+                "views":           payload.get("views", 0),
+                "likes":           payload.get("likes", 0),
+                "comments":        payload.get("comments", 0),
+                "engagement_rate": payload.get("engagement_rate", 0.0),
+                "follower_count":  payload.get("follower_count", 0),
+                "duration":        payload.get("duration", 0),
+                "upload_date":     payload.get("upload_date", "N/A"),
+                "hashtags":        payload.get("hashtags", []),
+            }
+        else:
+            results[label] = None
+
+    lines = ["--- REAL VIDEO ANALYTICS (from Qdrant) ---"]
+    for label, data in results.items():
+        if data:
+            lines.append(
+                f"\nVideo {label} ({data['platform'].upper()} | @{data['creator']}):\n"
+                f"  Views: {data['views']:,} | Likes: {data['likes']:,} | Comments: {data['comments']:,}\n"
+                f"  Engagement Rate: {data['engagement_rate']}%\n"
+                f"  Followers: {data['follower_count']:,} | Duration: {data['duration']}s\n"
+                f"  Upload Date: {data['upload_date']}\n"
+                f"  Hashtags: {', '.join(data['hashtags'][:5]) if data['hashtags'] else 'None'}"
+            )
+        else:
+            lines.append(f"\nVideo {label}: No metadata found — video may not have been ingested yet.")
+
+    formatted_metrics = "\n".join(lines)
+    return {"video_context": formatted_metrics}
+
+
+# ─── 4. Node: LLM Response Generator ──────────────────────────────────────────
 async def generate_response(state: AgentState):
-    """Synthesizes the final answer using the compiled background memory context."""
+    """Synthesizes the final answer using retrieved context and conversation history."""
     conversation_history = state["messages"]
-    context = state.get("video_context", "No direct vector text matches found.")
-    
+    context = state.get("video_context", "No context retrieved.")
+
     system_instruction = (
-        f"You are an expert Social Media analytics engine. "
-        f"Answer the user's inquiry accurately using only the extracted video context below.\n\n"
-        f"--- VIDEO TEXT DATA CONTEXT ---\n{context}\n--------------------------------\n"
-        f"Be direct, structured, and prioritize analytical clarity."
+        "You are an expert Social Media Analytics AI. "
+        "Answer the user's question using ONLY the video data context provided below. "
+        "Always cite your sources using the [Source: Video X | Chunk Y] tags present in the context.\n\n"
+        f"--- VIDEO DATA CONTEXT ---\n{context}\n--------------------------\n"
+        "Be concise, structured, and analytically clear."
     )
-    
-    # Package messages for the modern Google GenAI SDK syntax format
+
+    # Package conversation history for Gemini SDK format
     formatted_contents = []
     for msg in conversation_history:
-        # Map roles cleanly ('user' or 'model')
         role = "user" if msg.type == "human" else "model"
         formatted_contents.append({"role": role, "parts": [{"text": msg.content}]})
-        
-    # Call the async engine (.aio) for token streaming chunk responses
-    response_stream =await gemini_client.aio.models.generate_content_stream(
+
+    # Call Gemini async streaming
+    response_stream = await gemini_client.aio.models.generate_content_stream(
         model="gemini-2.5-flash",
         contents=formatted_contents,
         config={"system_instruction": system_instruction}
     )
 
-    # Accumulate chunks so the inner LangGraph state stays synced
     full_text = ""
     async for chunk in response_stream:
         if chunk.text:
             full_text += chunk.text
-    
-    # Return the text as a clean assistant reply message node string
+
     return {"messages": [{"role": "assistant", "content": full_text}]}
 
-    # 4. Construct and compile the network layout graph 
-workflow = StateGraph(AgentState)
 
-# Add our custom processing steps
-workflow.add_node("retriever", retrieve_semantic_context)
-workflow.add_node("generator", generate_response)
-
-# Connect the paths
-workflow.add_edge(START, "retriever")
-workflow.add_edge("retriever", "generator")
-workflow.add_edge("generator", END)
-
-# Compile graph into a standard executable agent instance
-graph_agent = workflow.compile()
-
-# 5. Node: The Custom Analytics Engine
-def fetch_video_analytics(state: AgentState):
-    """Processes analytical math queries by accessing our key metric tables."""
-    # Mock database record representing a creator profile metrics map
-    mock_metrics_db = {
-        "total_views": 1420500,
-        "average_watch_time_mins": 8.4,
-        "subscriber_conversion_rate": "2.3%",
-        "top_performing_video_id": "dQw4w9WgXcQ"
-    }
-    
-    # Format the data cleanly for our LLM synthesizer layer
-    formatted_metrics = (
-        f"--- INTERNAL SQL METRIC TABLES ---\n"
-        f"Total Profile Views: {mock_metrics_db['total_views']}\n"
-        f"Average Watch Duration: {mock_metrics_db['average_watch_time_mins']} minutes\n"
-        f"Sub Conversion Rate: {mock_metrics_db['subscriber_conversion_rate']}\n"
-        f"Top Video Asset Identifier: {mock_metrics_db['top_performing_video_id']}\n"
-        f"--------------------------------------"
-    )
-    
-    # Pass the data string forward through the state dictionary context channel
-    return {"video_context": formatted_metrics}
-
-    # 6. The Conditional Routing Edge Function
+# ─── 5. Conditional Router ─────────────────────────────────────────────────────
 def route_user_intent(state: AgentState) -> str:
-    """Inspects the user's prompt text to decide the optimal execution node path."""
+    """Routes the query to the analytics node or RAG retriever based on intent keywords."""
     user_query = state["messages"][-1].content.lower()
-    
-    # Catch keyword tags that indicate a calculation requirement
-    analytics_keywords = ["views", "stats", "metrics", "analytics", "subscriber", "average"]
-    
+
+    analytics_keywords = [
+        "views", "likes", "comments", "engagement", "rate", "stats",
+        "metrics", "analytics", "follower", "subscribers", "average",
+        "performance", "who is", "creator", "upload date", "duration"
+    ]
+
     if any(keyword in user_query for keyword in analytics_keywords):
-        print(" ROUTER LOGIC: Routing to [Analytics Engine]...")
+        print("ROUTER: → [Analytics Engine]")
         return "analytics"
-        
-    print(" ROUTER LOGIC: Routing to [RAG Vector Retriever]...")
+
+    print("ROUTER: → [RAG Vector Retriever]")
     return "retriever"
 
-    #(6) Reconstruct the execution architecture map
+
+# ─── 6. Build & Compile the LangGraph ─────────────────────────────────────────
 workflow = StateGraph(AgentState)
 
-# 1. Register all three functional work nodes
+# Register all functional nodes
 workflow.add_node("retriever", retrieve_semantic_context)
 workflow.add_node("analytics", fetch_video_analytics)
 workflow.add_node("generator", generate_response)
 
-# 2. Configure the entry point to run our routing function on START
+# Entry point: route based on user intent
 workflow.add_conditional_edges(
     START,
     route_user_intent,
     {
-        "analytics": "analytics",   # If router returns "analytics", branch up!
-        "retriever": "retriever"    # If router returns "retriever", branch down!
+        "analytics": "analytics",
+        "retriever": "retriever",
     }
 )
 
-# 3. Connect both processing nodes straight into the LLM synthesis layer
+# Both branches feed into the LLM generator
 workflow.add_edge("analytics", "generator")
 workflow.add_edge("retriever", "generator")
 workflow.add_edge("generator", END)
 
-# Compile into our new operational agent instance
+# Single compiled agent instance used by the FastAPI server
 graph_agent = workflow.compile()

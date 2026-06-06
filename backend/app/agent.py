@@ -41,7 +41,7 @@ def retrieve_semantic_context(state: AgentState):
 
 
 # 3. Node: The LLM Responder Engine
-def generate_response(state: AgentState):
+async def generate_response(state: AgentState):
     """Synthesizes the final answer using the compiled background memory context."""
     conversation_history = state["messages"]
     context = state.get("video_context", "No direct vector text matches found.")
@@ -60,17 +60,23 @@ def generate_response(state: AgentState):
         role = "user" if msg.type == "human" else "model"
         formatted_contents.append({"role": role, "parts": [{"text": msg.content}]})
         
-    # Execute call using Gemini 2.5 Flash for hyper-fast execution speeds
-    response = gemini_client.models.generate_content(
+    # Call the async engine (.aio) for token streaming chunk responses
+    response_stream =await gemini_client.aio.models.generate_content_stream(
         model="gemini-2.5-flash",
         contents=formatted_contents,
         config={"system_instruction": system_instruction}
     )
+
+    # Accumulate chunks so the inner LangGraph state stays synced
+    full_text = ""
+    async for chunk in response_stream:
+        if chunk.text:
+            full_text += chunk.text
     
     # Return the text as a clean assistant reply message node string
-    return {"messages": [{"role": "assistant", "content": response.text}]}
+    return {"messages": [{"role": "assistant", "content": full_text}]}
 
-    # 4. Construct and compile the network layout graph
+    # 4. Construct and compile the network layout graph 
 workflow = StateGraph(AgentState)
 
 # Add our custom processing steps

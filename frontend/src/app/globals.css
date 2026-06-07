@@ -102,19 +102,31 @@ body {
   grid-template-columns: 1fr 420px;
   gap: 0;
   height: calc(100vh - 73px);
-  overflow: hidden;
+  overflow: hidden;  /* clip both panels to the viewport — scroll happens inside each */
 }
 
 /* ─── Left Panel ─────────────────────────────────────────────────────────── */
 .left-panel {
-  overflow-y: auto;
+  height: 100%;          /* fill the grid cell exactly */
+  overflow-y: auto;      /* independent scrollbar for the left panel */
+  overflow-x: hidden;
   padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-elevated) transparent;
+  scrollbar-color: var(--border-strong) transparent;
+  box-sizing: border-box;
 }
+
+/* Webkit scrollbar — left panel */
+.left-panel::-webkit-scrollbar { width: 5px; }
+.left-panel::-webkit-scrollbar-track { background: transparent; }
+.left-panel::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 10px;
+}
+.left-panel::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* ─── Ingest Form ────────────────────────────────────────────────────────── */
 .ingest-form {
@@ -377,7 +389,8 @@ body {
   background: var(--bg-surface);
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: 100%;           /* fill grid cell */
+  overflow: hidden;       /* clip — only .chat-messages scrolls inside */
 }
 
 .chat-header {
@@ -401,15 +414,26 @@ body {
 .chat-status-dot.ready { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.5); }
 
 .chat-messages {
-  flex: 1;
-  overflow-y: auto;
+  flex: 1;               /* take remaining height between header and input */
+  min-height: 0;         /* critical — prevents flex child from overflowing */
+  overflow-y: auto;      /* independent scrollbar for chat messages */
+  overflow-x: hidden;
   padding: 16px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-elevated) transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
+
+/* Webkit scrollbar — chat messages */
+.chat-messages::-webkit-scrollbar { width: 5px; }
+.chat-messages::-webkit-scrollbar-track { background: transparent; }
+.chat-messages::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 10px;
+}
+.chat-messages::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 .chat-welcome {
   display: flex;

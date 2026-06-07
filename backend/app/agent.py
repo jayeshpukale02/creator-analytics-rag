@@ -14,14 +14,14 @@ gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 qdrant_client = QdrantClient(url="http://localhost:6333")
 
 
-# ─── 1. State ──────────────────────────────────────────────────────────────────
+# ─── 1. State ──────
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     video_context: str
     target_video_id: str
 
 
-# ─── 2. RAG Retriever Node ─────────────────────────────────────────────────────
+# ─── 2. RAG Retriever Node ────
 def retrieve_semantic_context(state: AgentState):
     """Queries Qdrant for the top-5 semantically closest transcript chunks."""
     user_query = state["messages"][-1].content
@@ -45,7 +45,7 @@ def retrieve_semantic_context(state: AgentState):
     return {"video_context": retrieved_text}
 
 
-# ─── 3. Analytics Node ─────────────────────────────────────────────────────────
+# ─── 3. Analytics Node ────
 def fetch_video_analytics(state: AgentState):
     """
     Pulls live engagement metrics for Video A and B directly from Qdrant payloads.
@@ -81,7 +81,7 @@ def fetch_video_analytics(state: AgentState):
             lines.append(
                 f"\nVideo {label} ({p.get('platform','?').upper()} | @{p.get('creator','?')}):\n"
                 f"  Views: {views:,} | Likes: {likes:,} | Comments: {comments:,}\n"
-                f"  Engagement Rate: {eng}%\n"
+                f"  Engagement Rate: {str(eng) + '%' if eng is not None else 'N/A (views hidden by platform)'}\n"
                 f"  Followers: {followers:,} | Duration: {p.get('duration',0)}s\n"
                 f"  Upload Date: {p.get('upload_date','N/A')}\n"
                 f"  Hashtags: {', '.join(hashtags[:5]) if hashtags else 'None'}"
@@ -92,7 +92,7 @@ def fetch_video_analytics(state: AgentState):
     return {"video_context": "\n".join(lines)}
 
 
-# ─── 4. LLM Generator Node ─────────────────────────────────────────────────────
+# ─── 4. LLM Generator Node ─────
 async def generate_response(state: AgentState):
     """Synthesizes the final answer from retrieved context + conversation history."""
     context = state.get("video_context", "No context retrieved.")
@@ -138,7 +138,7 @@ async def generate_response(state: AgentState):
     return {"messages": [{"role": "assistant", "content": full_text}]}
 
 
-# ─── 5. Router ─────────────────────────────────────────────────────────────────
+# ─── 5. Router ───────
 def route_user_intent(state: AgentState) -> str:
     """Routes to analytics node or RAG retriever based on query keywords."""
     query = state["messages"][-1].content.lower()
@@ -154,7 +154,7 @@ def route_user_intent(state: AgentState) -> str:
     return "retriever"
 
 
-# ─── 6. Build Graph ────────────────────────────────────────────────────────────
+# ─── 6. Build Graph ─────
 workflow = StateGraph(AgentState)
 workflow.add_node("retriever", retrieve_semantic_context)
 workflow.add_node("analytics", fetch_video_analytics)

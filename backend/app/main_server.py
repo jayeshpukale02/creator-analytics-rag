@@ -32,34 +32,35 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat/stream")
 async def stream_chat_response(payload: ChatRequest):
     """
-    Streams the LangGraph agent response token-by-token.
-    Uses thread_id to maintain conversation memory across turns via MemorySaver.
+    Streams the LangGraph agent response word-by-word.
+    Uses graph_agent.astream() which yields node-level state updates — reliable
+    regardless of whether the LLM is called via a LangChain wrapper or raw SDK.
+    thread_id ensures MemorySaver keeps conversation history across turns.
     """
     async def response_generator():
         config = {"configurable": {"thread_id": payload.thread_id}}
         inputs = {"messages": [HumanMessage(content=payload.message)]}
 
-        # astream_events gives us real token-level streaming from the LLM node
-        async for event in graph_agent.astream_events(inputs, config=config, version="v2"):
-            kind = event.get("event")
-            # Stream tokens from the generator node only
-            if kind == "on_chat_model_stream":
-                chunk = event.get("data", {}).get("chunk")
-                if chunk and hasattr(chunk, "content") and chunk.content:
-                    yield chunk.content
-            # Fallback: also capture any plain text output chunks
-            elif kind == "on_chain_stream":
-                data = event.get("data", {})
-                output = data.get("output", {})
-                if isinstance(output, dict):
-                    msgs = output.get("messages", [])
+        try:
+            async for node_output in graph_agent.astream(inputs, config=config):
+                # node_output is a dict: {"node_name": state_update}
+                if "generator" in node_output:
+                    msgs = node_output["generator"].get("messages", [])
                     if msgs:
                         last = msgs[-1]
-                        content = getattr(last, "content", None) or (
-                            last.get("content") if isinstance(last, dict) else None
-                        )
+                        # Handle both dict messages and LangChain message objects
+                        if isinstance(last, dict):
+                            content = last.get("content", "")
+                        else:
+                            content = getattr(last, "content", "") or ""
+
                         if content:
-                            yield content
+                            # Stream word by word with a short delay for smooth UX
+                            for word in content.split(" "):
+                                yield word + " "
+                                await asyncio.sleep(0.015)
+        except Exception as e:
+            yield f"[Error: {str(e)}]"
 
     return StreamingResponse(response_generator(), media_type="text/plain; charset=utf-8")
 

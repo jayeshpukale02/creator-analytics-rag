@@ -11,10 +11,15 @@ function makeThreadId() {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatNum(n) {
-  if (n == null) return '—';
+  if (n == null || n === 0) return '—';
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
   return n.toString();
+}
+
+function formatEngagement(rate) {
+  if (rate == null) return 'N/A';
+  return rate + '%';
 }
 
 function extractYouTubeId(url) {
@@ -97,7 +102,7 @@ function VideoCard({ label, data, url }) {
           </div>
           <div className="metric-chip engagement">
             <span className="metric-label">Engagement</span>
-            <span className="metric-value">{data.engagement_rate}%</span>
+            <span className="metric-value">{formatEngagement(data.engagement_rate)}</span>
           </div>
           <div className="metric-chip">
             <span className="metric-label">Followers</span>

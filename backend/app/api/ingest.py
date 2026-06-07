@@ -36,10 +36,13 @@ async def ingest_videos(payload: IngestRequest):
             platform="youtube"
         )
 
-        # Strip the raw transcript from the metadata dict before embedding —
-        # only the chunked text goes into Qdrant, not the entire transcript blob
-        video_meta_a = {k: v for k, v in yt_data.items() if k != "transcript"}
+        # IMPORTANT: exclude 'video_id' (raw YouTube ID like 'KHOSiaT4yC4') from the
+        # metadata dict. The chunk already has video_id='A' set by chunk_transcript().
+        # If we include the scraper's video_id here, payload.update() overwrites 'A'
+        # with the raw ID, breaking all analytics queries that filter on video_id='A'.
+        video_meta_a = {k: v for k, v in yt_data.items() if k not in ("transcript", "video_id")}
         video_meta_a["video_label"] = "A"
+        video_meta_a["raw_video_id"] = yt_data.get("video_id", "")  # preserve for reference
 
         store_video_chunks_in_db(chunks_a, video_metadata=video_meta_a)
 
@@ -76,8 +79,10 @@ async def ingest_videos(payload: IngestRequest):
             platform="instagram"
         )
 
-        video_meta_b = {k: v for k, v in ig_data.items() if k != "transcript"}
+        # Same fix: exclude raw 'video_id' so chunk's video_id='B' label is preserved.
+        video_meta_b = {k: v for k, v in ig_data.items() if k not in ("transcript", "video_id")}
         video_meta_b["video_label"] = "B"
+        video_meta_b["raw_video_id"] = ig_data.get("video_id", "")  # preserve for reference
 
         store_video_chunks_in_db(chunks_b, video_metadata=video_meta_b)
 
